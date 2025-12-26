@@ -1,15 +1,14 @@
 import os
 import io
-import asyncio
 import requests
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
 # ==========================================
-# 1. إعدادات البوت والبيانات
+# 1. إعدادات البوت والبيانات ⚙️
 # ==========================================
+
 TOKEN = "8067602225:AAHmpS7LtVLuy86RAT1ao6jmkykbHOWOZis"
 
 DATA = {
@@ -99,28 +98,17 @@ DATA = {
 }
 
 # ==========================================
-# 2. الدوال المساعدة لتحميل وإرسال الملفات
+# 2. منطق عمل البوت 🤖
 # ==========================================
 
-async def download_and_send(chat_id, context, url, filename, caption):
-    try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        file_io = io.BytesIO(response.content)
-        file_io.name = filename
-        await context.bot.send_document(chat_id=chat_id, document=file_io, caption=caption)
-        return True
-    except Exception as e:
-        print(f"Error sending file: {e}")
-        return False
-
-# ==========================================
-# 3. معالجات البوت (Handlers)
-# ==========================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: object) -> None:
     user = update.effective_user
-    welcome_text = f"👋 مرحباً بك يا <b>{user.mention_html()}</b>! ✨\n\nأنا مساعدك الدراسي الذكي. اختر المادة 👇:"
+    welcome_text = (
+        f"👋 مرحباً بك يا <b>{user.mention_html()}</b>! ✨\n\n"
+        "أنا مساعدك الدراسي الذكي. 📚\n"
+        "اختر المادة التي ترغب في الحصول على ملفاتها 👇:"
+    )
+    
     keyboard = [[InlineKeyboardButton(v['name'], callback_data=k)] for k, v in DATA['subjects'].items()]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -129,86 +117,122 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_html(welcome_text, reply_markup=reply_markup)
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_callback(update: Update, context: object) -> None:
     query = update.callback_query
     await query.answer()
+    
     data_key = query.data
-    chat_id = update.effective_chat.id
+    subjects = DATA['subjects']
 
+    # --- خيار تنزيل كل ملفات مادة محددة 📥 ---
+    if data_key.startswith("all_"):
+        subject_key = data_key.replace("all_", "")
+        subject = subjects.get(subject_key)
+        
+        if not subject: return
+
+        status_msg = await query.message.reply_html(f"🚀 جاري إرسال كافة ملفات <b>{subject['name']}</b>...")
+        
+        try:
+            if subject.get('type') == 'direct_file':
+                res = requests.get(subject['url'], stream=True)
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=InputFile(io.BytesIO(res.content), filename=subject['filename']),
+                    caption=f"✅ مادة: {subject['name']}"
+                )
+            elif subject.get('type') == 'submenu':
+                for lecture in subject['lectures']:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=lecture['u'],
+                        caption=f"✅ {lecture['n']}"
+                    )
+                    await asyncio.sleep(0.4) # تأخير بسيط لتجنب سبام تليجرام
+            
+            await status_msg.edit_text(f"✨ تم إرسال جميع ملفات <b>{subject['name']}</b> بنجاح! ✅", parse_mode='HTML')
+        except Exception as e:
+            await query.message.reply_text(f"❌ خطأ: {e}")
+        return
+
+    # زر العودة 🔙
     if data_key == "back_to_main":
         await start(update, context)
         return
 
-    # تنزيل الكل
-    if data_key.startswith("all_"):
-        subject_key = data_key.replace("all_", "")
-        subject = DATA['subjects'].get(subject_key)
-        msg = await query.message.reply_html(f"🚀 جاري إرسال ملفات <b>{subject['name']}</b>...")
-        
-        if subject['type'] == 'direct_file':
-            await download_and_send(chat_id, context, subject['url'], subject['filename'], f"✅ {subject['name']}")
-        else:
-            for lec in subject['lectures']:
-                await download_and_send(chat_id, context, lec['u'], f"{lec['n']}.pdf", f"✅ {lec['n']}")
-                await asyncio.sleep(0.5) 
-        await msg.edit_text("✨ تم الإرسال بنجاح!")
-        return
-
-    # عرض الملفات المتاحة
-    if data_key in DATA['subjects'] and DATA['subjects'][data_key]['type'] == 'submenu':
-        subject = DATA['subjects'][data_key]
+    # عرض القائمة الفرعية للمادة (مثل AI و IoT)
+    if data_key in subjects and subjects[data_key].get('type') == 'submenu':
+        subject = subjects[data_key]
         keyboard = []
-        for i in range(0, len(subject['lectures']), 2):
-            row = [InlineKeyboardButton(subject['lectures'][i]['n'], callback_data=f"dl_{data_key}_{i}")]
-            if i + 1 < len(subject['lectures']):
-                row.append(InlineKeyboardButton(subject['lectures'][i+1]['n'], callback_data=f"dl_{data_key}_{i+1}"))
+        lectures = subject['lectures']
+        
+        # ترتيب الأزرار (2 في كل صف)
+        for i in range(0, len(lectures), 2):
+            row = [InlineKeyboardButton(lectures[i]['n'], callback_data=f"dl_{data_key}_{i}")]
+            if i + 1 < len(lectures):
+                row.append(InlineKeyboardButton(lectures[i+1]['n'], callback_data=f"dl_{data_key}_{i+1}"))
             keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("📥 تنزيل كل الملفات", callback_data=f"all_{data_key}")])
-        keyboard.append([InlineKeyboardButton("🔙 العودة", callback_data="back_to_main")])
-        await query.edit_message_text(text=f"📂 ملفات {subject['name']}:", reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        # زر "تنزيل الكل" للمادة
+        keyboard.append([InlineKeyboardButton(f"📥 تنزيل كل ملفات {subject['name']}", callback_data=f"all_{data_key}")])
+        keyboard.append([InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="back_to_main")])
+        
+        await query.edit_message_text(
+            text=f"{subject['name']} ⚙️\n\nإليك الملفات المتاحة. اختر ملفاً أو قم بتنزيل الكل 👇:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
 
+    # تحميل ملف فردي من القائمة الفرعية
     elif data_key.startswith("dl_"):
         parts = data_key.split("_")
-        subject_key, lec_idx = "_".join(parts[1:-1]), int(parts[-1])
-        lec = DATA['subjects'][subject_key]['lectures'][lec_idx]
-        await download_and_send(chat_id, context, lec['u'], f"{lec['n']}.pdf", f"✅ {lec['n']}")
+        subject_key = "_".join(parts[1:-1]) 
+        lecture_idx = int(parts[-1])
+        lecture = subjects[subject_key]['lectures'][lecture_idx]
+        msg = await query.message.reply_html(f"⏳ جاري إرسال: <b>{lecture['n']}</b>...")
+        try:
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=lecture['u'], caption=f"✅ {lecture['n']}")
+            await msg.delete()
+        except: await query.message.reply_text("❌ فشل الإرسال.")
 
-    elif data_key in DATA['subjects']:
-        subject = DATA['subjects'][data_key]
-        await download_and_send(chat_id, context, subject['url'], subject['filename'], f"✅ {subject['name']}")
+    # عرض مادة ذات ملف واحد (Google Drive)
+    elif data_key in subjects:
+        subject = subjects[data_key]
+        btns = [
+            [InlineKeyboardButton(f"⬇️ تنزيل {subject['name']}", callback_data=f"file_{data_key}")],
+            [InlineKeyboardButton("🔙 عودة للقائمة الرئيسية", callback_data="back_to_main")]
+        ]
+        await query.edit_message_text(
+            f"📚 مادة: <b>{subject['name']}</b>\nالملف المتاح: <b>{subject['filename']}</b>",
+            reply_markup=InlineKeyboardMarkup(btns),
+            parse_mode='HTML'
+        )
+
+    # تنفيذ تحميل ملف من Drive
+    elif data_key.startswith("file_"):
+        s_key = data_key.replace("file_", "")
+        subject = subjects[s_key]
+        msg = await query.edit_message_text(f"⏳ جاري تحميل <b>{subject['name']}</b>...")
+        try:
+            res = requests.get(subject['url'], stream=True)
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=InputFile(io.BytesIO(res.content), filename=subject['filename']),
+                caption=f"✅ تم تحميل {subject['name']}"
+            )
+            await msg.delete()
+        except: await query.message.reply_text("❌ حدث خطأ.")
 
 # ==========================================
-# 4. إعداد FastAPI والـ Lifespan (دمج كامل)
+# 3. التشغيل 🚀
 # ==========================================
 
-bot_app = Application.builder().token(TOKEN).build()
+def main():
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    print("🚀 البوت يعمل الآن بنظام Polling...")
+    application.run_polling()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # تشغيل البوت مرة واحدة عند بدء السيرفر
-    await bot_app.initialize()
-    await bot_app.start()
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CallbackQueryHandler(handle_callback))
-    yield
-    # إغلاق نظيف للبوت
-    await bot_app.stop()
-    await bot_app.shutdown()
-
-app = FastAPI(lifespan=lifespan)
-
-@app.post("/webhook")
-async def webhook_handler(request: Request):
-    data = await request.json()
-    try:
-        # استخدام الـ Constructor المباشر لـ v20+ كما اقترحت
-        update = Update(**data)
-        await bot_app.process_update(update)
-    except Exception as e:
-        print(f"Webhook Error: {e}")
-    
-    return Response(status_code=200)
-
-@app.get("/")
-def index():
-    return {"message": "Server is running. Send updates to /webhook"}
+if __name__ == "__main__":
+    main()
