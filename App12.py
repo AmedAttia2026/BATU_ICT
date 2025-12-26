@@ -99,7 +99,7 @@ DATA = {
 }
 
 # ==========================================
-# 2. الدوال المساعدة
+# 2. الدوال المساعدة لتحميل وإرسال الملفات
 # ==========================================
 
 async def download_and_send(chat_id, context, url, filename, caption):
@@ -139,6 +139,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await start(update, context)
         return
 
+    # تنزيل الكل
     if data_key.startswith("all_"):
         subject_key = data_key.replace("all_", "")
         subject = DATA['subjects'].get(subject_key)
@@ -153,6 +154,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await msg.edit_text("✨ تم الإرسال بنجاح!")
         return
 
+    # عرض الملفات المتاحة
     if data_key in DATA['subjects'] and DATA['subjects'][data_key]['type'] == 'submenu':
         subject = DATA['subjects'][data_key]
         keyboard = []
@@ -176,20 +178,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await download_and_send(chat_id, context, subject['url'], subject['filename'], f"✅ {subject['name']}")
 
 # ==========================================
-# 4. إعداد FastAPI والـ Webhook
+# 4. إعداد FastAPI والـ Lifespan (دمج كامل)
 # ==========================================
 
 bot_app = Application.builder().token(TOKEN).build()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # تهيئة البوت عند تشغيل السيرفر
+    # تشغيل البوت مرة واحدة عند بدء السيرفر
     await bot_app.initialize()
     await bot_app.start()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CallbackQueryHandler(handle_callback))
     yield
-    # إغلاق البوت عند توقف السيرفر
+    # إغلاق نظيف للبوت
     await bot_app.stop()
     await bot_app.shutdown()
 
@@ -198,15 +200,15 @@ app = FastAPI(lifespan=lifespan)
 @app.post("/webhook")
 async def webhook_handler(request: Request):
     data = await request.json()
-    # استخدام المبدأ اللي ذكرته في ملاحظتك (Constructor مباشر)
     try:
+        # استخدام الـ Constructor المباشر لـ v20+ كما اقترحت
         update = Update(**data)
         await bot_app.process_update(update)
     except Exception as e:
-        print(f"Webhook processing error: {e}")
+        print(f"Webhook Error: {e}")
     
     return Response(status_code=200)
 
 @app.get("/")
 def index():
-    return {"message": "Telegram Bot is active on Vercel!"}
+    return {"message": "Server is running. Send updates to /webhook"}
